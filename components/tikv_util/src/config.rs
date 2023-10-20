@@ -1518,7 +1518,7 @@ impl RaftDataStateMachine {
     pub fn after_dump_data(&mut self) {
         assert!(Self::data_exists(&self.source));
         assert!(Self::data_exists(&self.target));
-        Self::must_remove(&self.source); // Enters the `Completed` state.
+        Self::must_remove_except(&self.source, &self.target);
         Self::must_remove(&self.in_progress_marker);
     }
 
@@ -1566,6 +1566,31 @@ impl RaftDataStateMachine {
                 info!("Removing file"; "path" => %path.display());
                 fs::remove_file(path).unwrap();
                 Self::sync_dir(path.parent().unwrap());
+            }
+        }
+    }
+
+    // Remove all files and directories under `path` except `except`.
+    fn must_remove_except(path: &Path, except: &Path) {
+        if !path.exists() {
+            info!("Path not exists"; "path" => %path.display());
+            return;
+        }
+        if !path.is_dir() {
+            info!("Path is not a directory, so remove directly"; "path" => %path.display());
+            Self::must_remove(path);
+            return;
+        }
+        if !except.starts_with(path) {
+            info!("Path not under except, so remove directly"; "path" => %path.display(), "except" => %except.display());
+            Self::must_remove(path);
+            return;
+        }
+
+        for entry in fs::read_dir(path).unwrap() {
+            let sub_path = entry.unwrap().path();
+            if sub_path != except {
+                Self::must_remove(&sub_path);
             }
         }
     }

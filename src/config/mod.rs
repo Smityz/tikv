@@ -3465,7 +3465,9 @@ impl TikvConfig {
 
         // Validating data paths.
         if self.raft_engine.config.dir == self.raft_store.raftdb_path {
-            return Err("raft_engine.config.dir can't be same as raft_store.raftdb_path".into());
+            self.raft_engine.config.dir =
+                config::canonicalize_sub_path(&self.raft_store.raftdb_path, "raft-engine")?;
+            info!("raft_engine.config.dir can't be same as raft_store.raftdb_path, so raft_store.raftdb_path has been changed into dir"; "dir" => self.raft_engine.config.dir.clone());
         }
         let kv_data_exists = match self.storage.engine {
             EngineType::RaftKv => {
@@ -3985,7 +3987,7 @@ impl TikvConfig {
                 last_cfg.raftdb.wal_dir, self.raftdb.wal_dir
             ));
         }
-        if last_raft_engine_dir != self.raft_engine.config.dir {
+        if last_raft_engine_dir != self.raft_engine.config.dir && last_cfg.raft_engine.enable {
             return Err(format!(
                 "raft engine dir have been changed, former is '{}', \
                  current is '{}', please check if it is expected.",
