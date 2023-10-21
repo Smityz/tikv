@@ -3434,8 +3434,13 @@ impl TikvConfig {
 
     pub fn infer_raft_engine_path(&self, data_dir: Option<&str>) -> Result<String, Box<dyn Error>> {
         if self.raft_engine.config.dir.is_empty() {
-            let data_dir = data_dir.unwrap_or(&self.storage.data_dir);
-            config::canonicalize_sub_path(data_dir, "raft-engine")
+            if self.raft_store.raftdb_path.is_empty() {
+                let data_dir = data_dir.unwrap_or(&self.storage.data_dir);
+                return config::canonicalize_sub_path(data_dir, "raft-engine");
+            } else {
+                // if raftdb_path is set, raft-engine will inherit from it.
+                return config::canonicalize_sub_path(&self.raft_store.raftdb_path, "raft-engine");
+            }
         } else {
             config::canonicalize_path(&self.raft_engine.config.dir)
         }
@@ -3467,7 +3472,9 @@ impl TikvConfig {
         if self.raft_engine.config.dir == self.raft_store.raftdb_path {
             self.raft_engine.config.dir =
                 config::canonicalize_sub_path(&self.raft_store.raftdb_path, "raft-engine")?;
-            info!("raft_engine.config.dir can't be same as raft_store.raftdb_path, so raft_store.raftdb_path has been changed into dir"; "dir" => self.raft_engine.config.dir.clone());
+            info!("raft_engine.config.dir can't be same as raft_store.raftdb_path, \
+                so raft_store.raftdb_path has been changed into dir"; 
+                "dir" => self.raft_engine.config.dir.clone());
         }
         let kv_data_exists = match self.storage.engine {
             EngineType::RaftKv => {
@@ -3951,6 +3958,10 @@ impl TikvConfig {
                 ));
             }
         }
+        println!(
+            "last_cfg.storage.data_dir: {}, self.rocksdb.wal_dir: {}",
+            last_cfg.storage.data_dir, self.rocksdb.wal_dir
+        );
         if last_cfg.rocksdb.wal_dir != self.rocksdb.wal_dir {
             return Err(format!(
                 "db wal dir have been changed, former is '{}', \
@@ -3987,7 +3998,9 @@ impl TikvConfig {
                 last_cfg.raftdb.wal_dir, self.raftdb.wal_dir
             ));
         }
-        if last_raft_engine_dir != self.raft_engine.config.dir && last_cfg.raft_engine.enable {
+        if Path::new(&last_raft_engine_dir).exists()
+            && last_raft_engine_dir != self.raft_engine.config.dir
+        {
             return Err(format!(
                 "raft engine dir have been changed, former is '{}', \
                  current is '{}', please check if it is expected.",
@@ -4599,7 +4612,7 @@ impl ConfigController {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::Duration};
+    use std::{env, sync::Arc, time::Duration};
 
     use api_version::{ApiV1, KvFormat};
     use case_macros::*;
@@ -4691,9 +4704,48 @@ mod tests {
         tikv_cfg.raft_engine.enable = true;
         last_cfg.raft_engine.enable = true;
 
-        tikv_cfg.raft_engine.mut_config().dir = "/raft/wal_dir".to_owned();
+        // last_raft_engine_dir == now_raft_engine_dir and last_raft_engine_dir exists,
+        // result will be true
+        let last_dir = env::current_dir().unwrap().join("unittest_raft_engine_dir");
+        last_cfg.raft_engine.mut_config().dir = last_dir.to_str().unwrap().to_owned();
+        tikv_cfg.raft_engine.mut_config().dir = last_dir.to_str().unwrap().to_owned();
+        fs::create_dir(&last_dir).unwrap();
+        tikv_cfg.validate().unwrap();
+        tikv_cfg.check_critical_cfg_with(&last_cfg).unwrap();
+        fs::remove_dir_all(&last_dir).unwrap();
+        tikv_cfg = TikvConfig::default();
+        last_cfg = TikvConfig::default();
+
+        // last_raft_engine_dir == now_raft_engine_dir but last_raft_engine_dir not
+        // exists, result will be true
+        let last_dir = env::current_dir().unwrap().join("unittest_raft_engine_dir");
+        last_cfg.raft_engine.mut_config().dir = last_dir.to_str().unwrap().to_owned();
+        tikv_cfg.raft_engine.mut_config().dir = last_dir.to_str().unwrap().to_owned();
+        tikv_cfg.validate().unwrap();
+        tikv_cfg.check_critical_cfg_with(&last_cfg).unwrap();
+        tikv_cfg = TikvConfig::default();
+        last_cfg = TikvConfig::default();
+
+        // last_raft_engine_dir != now_raft_engine_dir and last_raft_engine_dir exists,
+        // result will be false
+        last_cfg.raft_engine.mut_config().dir = last_dir.to_str().unwrap().to_owned();
+        tikv_cfg.raft_engine.mut_config().dir = "new_dir".to_owned();
+        fs::create_dir(&last_dir).unwrap();
         tikv_cfg.validate().unwrap();
         tikv_cfg.check_critical_cfg_with(&last_cfg).unwrap_err();
+        fs::remove_dir_all(&last_dir).unwrap();
+        tikv_cfg = TikvConfig::default();
+        last_cfg = TikvConfig::default();
+
+        // last_raft_engine_dir != now_raft_engine_dir but last_raft_engine_dir not
+        // exists, result will be true, this will happen when updating from the
+        // server which not uses raft-engine
+        last_cfg.raft_engine.mut_config().dir = last_dir.to_str().unwrap().to_owned();
+        tikv_cfg.raft_engine.mut_config().dir = "new_dir".to_owned();
+        tikv_cfg.validate().unwrap();
+        tikv_cfg.check_critical_cfg_with(&last_cfg).unwrap();
+        tikv_cfg = TikvConfig::default();
+        last_cfg = TikvConfig::default();
 
         last_cfg.raft_engine.mut_config().dir = "/raft/wal_dir".to_owned();
         tikv_cfg.validate().unwrap();
