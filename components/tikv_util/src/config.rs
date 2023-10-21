@@ -1570,26 +1570,26 @@ impl RaftDataStateMachine {
         }
     }
 
-    // Remove all files and directories under `path` except `except`.
-    fn must_remove_except(path: &Path, except: &Path) {
-        if !path.exists() {
-            info!("Path not exists"; "path" => %path.display());
+    // Remove all files and directories under `remove_path` except `retain_path`.
+    fn must_remove_except(remove_path: &Path, retain_path: &Path) {
+        if !remove_path.exists() {
+            info!("Path not exists"; "path" => %remove_path.display());
             return;
         }
-        if !path.is_dir() {
-            info!("Path is not a directory, so remove directly"; "path" => %path.display());
-            Self::must_remove(path);
+        if !remove_path.is_dir() {
+            info!("Path is not a directory, so remove directly"; "path" => %remove_path.display());
+            Self::must_remove(remove_path);
             return;
         }
-        if !except.starts_with(path) {
-            info!("Path not under except, so remove directly"; "path" => %path.display(), "except" => %except.display());
-            Self::must_remove(path);
+        if !retain_path.starts_with(remove_path) {
+            info!("Retain path is not under the remove path, so remove directly"; "Retain path" => %retain_path.display(), "remove path" => %remove_path.display());
+            Self::must_remove(remove_path);
             return;
         }
 
-        for entry in fs::read_dir(path).unwrap() {
+        for entry in fs::read_dir(remove_path).unwrap() {
             let sub_path = entry.unwrap().path();
-            if sub_path != except {
+            if sub_path != retain_path {
                 Self::must_remove(&sub_path);
             }
         }
@@ -1616,7 +1616,7 @@ impl RaftDataStateMachine {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::File, io::Write, path::Path};
+    use std::{env, fs::File, io::Write, path::Path};
 
     use tempfile::Builder;
 
@@ -2200,5 +2200,121 @@ yyy = 100
             run_migration(&root, &target, &source, || {});
             copy_dir(&backup, &root).unwrap();
         });
+    }
+
+    fn create_raftdb(path: &Path) {
+        fs::create_dir(&path).unwrap();
+        let raftdb_data = path.join("raftdb_data");
+        fs::File::create(&raftdb_data).unwrap();
+    }
+
+    fn create_raftengine(path: &Path) {
+        fs::create_dir(&path).unwrap();
+        let raftengine_data = path.join("raftengine_data");
+        fs::File::create(&raftengine_data).unwrap();
+    }
+
+    fn create_test_root(path: &Path) {
+        fs::create_dir(&path).unwrap();
+    }
+
+    fn raftengine_must_exist(path: &Path) {
+        assert!(path.exists());
+        let raftengine_data = path.join("raftengine_data");
+        assert!(raftengine_data.exists());
+    }
+
+    fn raftdb_must_not_exist(path: &Path) {
+        assert!(!path.exists());
+        let raftdb_data = path.join("raftdb_data");
+        assert!(!raftdb_data.exists());
+    }
+
+    #[test]
+    fn test_must_remove_except() {
+        let test_dir = env::current_dir().unwrap().join("test_must_remove_except");
+        // before:
+        // test_must_remove_except
+        // ├── raftdb
+        // │   └── raftdb_data
+        // └── raftengine
+        //     └── raftengine_data
+        //
+        // after:
+        // test_must_remove_except
+        // └── raftengine
+        //     └── raftengine_data
+        create_test_root(&test_dir);
+        let raftdb_dir = test_dir.join("raftdb");
+        let raftengine_dir = test_dir.join("raftengine");
+        create_raftdb(&raftdb_dir);
+        create_raftengine(&raftengine_dir);
+        RaftDataStateMachine::must_remove_except(&raftdb_dir, &raftengine_dir);
+        raftengine_must_exist(&raftengine_dir);
+        raftdb_must_not_exist(&raftdb_dir);
+        fs::remove_dir_all(&test_dir).unwrap();
+
+        // before:
+        // test_must_remove_except/
+        // └── raftdb
+        //     ├── raftdb_data
+        //     └── raftengine
+        //         └── raftengine_data
+        //
+        // after:
+        // test_must_remove_except/
+        // └── raftdb
+        //     └── raftengine
+        //         └── raftengine_data
+        create_test_root(&test_dir);
+        let raftdb_dir = test_dir.join("raftdb");
+        let raftengine_dir = raftdb_dir.join("raftengine");
+        create_raftdb(&raftdb_dir);
+        create_raftengine(&raftengine_dir);
+        RaftDataStateMachine::must_remove_except(&raftdb_dir, &raftengine_dir);
+        raftengine_must_exist(&raftengine_dir);
+        assert!(!test_dir.join("raftdb/raftdb_data").exists());
+        fs::remove_dir_all(&test_dir).unwrap();
+
+        // before:
+        // test_must_remove_except/
+        // └── raftengine
+        //     ├── raftdb
+        //     │   └── raftdb_data
+        //     └── raftengine_data
+        //
+        // after:
+        // test_must_remove_except/
+        // └── raftengine
+        //     └── raftengine_data
+        create_test_root(&test_dir);
+        let raftengine_dir = test_dir.join("raftengine");
+        let raftdb_dir = raftengine_dir.join("raftdb");
+        create_raftengine(&raftengine_dir);
+        create_raftdb(&raftdb_dir);
+        RaftDataStateMachine::must_remove_except(&raftdb_dir, &raftengine_dir);
+        raftengine_must_exist(&raftengine_dir);
+        raftdb_must_not_exist(&raftdb_dir);
+        fs::remove_dir_all(&test_dir).unwrap();
+
+        // before:
+        // test_must_remove_except/
+        // ├── raftdb_data
+        // └── raftengine
+        //     └── raftengine_data
+        //
+        // after:
+        // test_must_remove_except/
+        // └── raftengine
+        //     └── raftengine_data
+        create_test_root(&test_dir);
+        let raftdb_data = test_dir.join("raftdb_data");
+        fs::File::create(&raftdb_data).unwrap();
+        let raftengine_dir = test_dir.join("raftengine");
+        create_raftengine(&raftengine_dir);
+        RaftDataStateMachine::must_remove_except(&test_dir, &raftengine_dir);
+        raftengine_must_exist(&raftengine_dir);
+        assert!(!test_dir.join("raftdb_data").exists());
+        fs::remove_dir_all(&test_dir).unwrap();
     }
 }
