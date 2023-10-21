@@ -3434,13 +3434,8 @@ impl TikvConfig {
 
     pub fn infer_raft_engine_path(&self, data_dir: Option<&str>) -> Result<String, Box<dyn Error>> {
         if self.raft_engine.config.dir.is_empty() {
-            if self.raft_store.raftdb_path.is_empty() {
-                let data_dir = data_dir.unwrap_or(&self.storage.data_dir);
-                return config::canonicalize_sub_path(data_dir, "raft-engine");
-            } else {
-                // if raftdb_path is set, raft-engine will inherit from it.
-                return config::canonicalize_sub_path(&self.raft_store.raftdb_path, "raft-engine");
-            }
+                            let data_dir = data_dir.unwrap_or(&self.storage.data_dir);
+                config::canonicalize_sub_path(data_dir, "raft-engine")
         } else {
             config::canonicalize_path(&self.raft_engine.config.dir)
         }
@@ -3461,8 +3456,25 @@ impl TikvConfig {
                 .unwrap()
                 .to_owned();
         }
-        self.raft_store.raftdb_path = self.infer_raft_db_path(None)?;
+
+        match (self.raft_engine.config.dir, conf.raft_store.raftdb_path) {
+            (None, None) => {
+                let data_dir = data_dir.unwrap_or(&self.storage.data_dir);
+                let log_dir = config::canonicalize_sub_path(data_dir, "raft-engine");
+                self.raft_engine.config.dir = &self.storage.data_dir;
+                self.raft_store.raftdb_path = self.infer_raft_db_path(None)?;
+            }
+            (Some(_), None) => {
+                self.raft_store.raftdb_path = self.infer_raft_db_path(None)?;
+            }
+            (None, Some(_)) => {
+                self.raft_engine.config.dir = self.infer_raft_engine_path(None)?;
+            }
+            (Some(_), Some(_)) => {}
+        }
+
         self.raft_engine.config.dir = self.infer_raft_engine_path(None)?;
+        self.raft_store.raftdb_path = self.infer_raft_db_path(None)?;
         if self.log_backup.temp_path.is_empty() {
             self.log_backup.temp_path =
                 config::canonicalize_sub_path(&self.storage.data_dir, "log-backup-temp")?;
@@ -3472,9 +3484,9 @@ impl TikvConfig {
         if self.raft_engine.config.dir == self.raft_store.raftdb_path {
             self.raft_engine.config.dir =
                 config::canonicalize_sub_path(&self.raft_store.raftdb_path, "raft-engine")?;
-            info!("raft_engine.config.dir can't be same as raft_store.raftdb_path, \
+            warn!("raft_engine.config.dir can't be same as raft_store.raftdb_path, \
                 so raft_store.raftdb_path has been changed into dir"; 
-                "dir" => self.raft_engine.config.dir.clone());
+                "dir" => &self.raft_engine.config.dir);
         }
         let kv_data_exists = match self.storage.engine {
             EngineType::RaftKv => {
@@ -6759,5 +6771,28 @@ mod tests {
                 .unwrap(),
             50
         );
+    }
+
+    #[test]
+    fn test_raft_dir() {
+        let mut conf = TikvConfig::default();
+        conf.storage.data_dir = "/data".to_owned();
+        conf.validate().unwrap();
+        assert_eq!(conf.raft_store.raftdb_path, "/data/raft".to_owned());
+        assert_eq!(conf.raft_engine.config.dir, "/data/raft-engine".to_owned());
+
+        let mut conf = TikvConfig::default();
+        conf.storage.data_dir = "/data".to_owned();
+        conf.raft_store.raftdb_path = "/raft".to_owned();
+        conf.validate().unwrap();
+        assert_eq!(conf.raft_store.raftdb_path, "/raft".to_owned());
+        assert_eq!(conf.raft_engine.config.dir, "/raft/raft-engine".to_owned());
+
+        let mut conf = TikvConfig::default();
+        conf.storage.data_dir = "/data".to_owned();
+        conf.raft_engine.config.dir = "/raft".to_owned();
+        conf.validate().unwrap();
+        assert_eq!(conf.raft_store.raftdb_path, "/raft".to_owned());
+        assert_eq!(conf.raft_engine.config.dir, "/raft/raft-engine".to_owned());
     }
 }
