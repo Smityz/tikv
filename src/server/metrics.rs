@@ -384,6 +384,12 @@ lazy_static! {
         "Interval of ttl checker poll"
     )
     .unwrap();
+    pub static ref TTL_EXPIRE_KV_SIZE_COUNTER_VEC: IntCounterVec = register_int_counter_vec!(
+        "tikv_ttl_expire_kv_size_total",
+        "Total number of rawkv ttl expire items",
+        &["type"]
+    )
+    .unwrap();
     pub static ref RAFT_MESSAGE_RECV_COUNTER: IntCounter = register_int_counter!(
         "tikv_server_raft_message_recv_total",
         "Total number of raft messages received"

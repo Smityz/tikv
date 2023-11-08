@@ -1,6 +1,6 @@
 // Copyright 2021 TiKV Project Authors. Licensed under Apache-2.0.
 
-use std::{ffi::CString, marker::PhantomData};
+use std::{f32::consts::E, ffi::CString, marker::PhantomData};
 
 use api_version::{KeyMode, KvFormat, RawValue};
 use engine_rocks::{
@@ -12,7 +12,7 @@ use engine_rocks::{
 };
 use engine_traits::raw_ttl::ttl_current_ts;
 
-use crate::server::metrics::TTL_CHECKER_ACTIONS_COUNTER_VEC;
+use crate::server::metrics::{TTL_CHECKER_ACTIONS_COUNTER_VEC, TTL_EXPIRE_KV_SIZE_COUNTER_VEC};
 
 #[derive(Default)]
 pub struct TtlCompactionFilterFactory<F: KvFormat> {
@@ -43,6 +43,7 @@ impl<F: KvFormat> CompactionFilterFactory for TtlCompactionFilterFactory<F> {
         let name = CString::new("ttl_compaction_filter").unwrap();
         let filter = TtlCompactionFilter::<F> {
             ts: current,
+            is_bottommost_level: context.is_bottommost_level(),
             _phantom: PhantomData,
         };
         Some((name, filter))
@@ -55,19 +56,23 @@ impl<F: KvFormat> CompactionFilterFactory for TtlCompactionFilterFactory<F> {
 
 pub struct TtlCompactionFilter<F: KvFormat> {
     ts: u64,
+    is_bottommost_level: bool,
     _phantom: PhantomData<F>,
 }
 
 impl<F: KvFormat> CompactionFilter for TtlCompactionFilter<F> {
     fn featured_filter(
         &mut self,
-        _level: usize,
+        level: usize,
         key: &[u8],
         _sequence: u64,
         value: &[u8],
         value_type: CompactionFilterValueType,
     ) -> CompactionFilterDecision {
         if value_type != CompactionFilterValueType::Value {
+            TTL_EXPIRE_KV_SIZE_COUNTER_VEC
+                .with_label_values(&["expired"])
+                .inc_by(key.len() as u64 + value.len() as u64);
             return CompactionFilterDecision::Keep;
         }
         // Only consider data keys.
@@ -83,7 +88,26 @@ impl<F: KvFormat> CompactionFilter for TtlCompactionFilter<F> {
             Ok(RawValue {
                 expire_ts: Some(expire_ts),
                 ..
-            }) if expire_ts <= self.ts => CompactionFilterDecision::Remove,
+            }) => match expire_ts <= self.ts {
+                true => {
+                    if self.is_bottommost_level {
+                        TTL_EXPIRE_KV_SIZE_COUNTER_VEC
+                            .with_label_values(&["expired_bottom"])
+                            .inc_by(key.len() as u64 + value.len() as u64);
+                    } else {
+                        TTL_EXPIRE_KV_SIZE_COUNTER_VEC
+                            .with_label_values(&["expired"])
+                            .inc_by(value.len() as u64);
+                    }
+                    CompactionFilterDecision::Remove
+                }
+                false => {
+                    TTL_EXPIRE_KV_SIZE_COUNTER_VEC
+                        .with_label_values(&["expired"])
+                        .inc_by(key.len() as u64 + value.len() as u64);
+                    CompactionFilterDecision::Keep
+                }
+            },
             Err(err) => {
                 TTL_CHECKER_ACTIONS_COUNTER_VEC
                     .with_label_values(&["ts_error"])
