@@ -385,9 +385,19 @@ lazy_static! {
     )
     .unwrap();
     pub static ref TTL_EXPIRE_KV_SIZE_COUNTER_VEC: IntCounterVec = register_int_counter_vec!(
-        "tikv_ttl_expire_kv_size_total",
+        "tikv_ttl_expire_kv_size_1_total",
         "Total number of rawkv ttl expire items",
         &["type"]
+    )
+    .unwrap();
+    pub static ref TTL_EXPIRE_KV_SIZE_COUNTER: IntCounter = register_int_counter!(
+        "tikv_ttl_expire_kv_size_total",
+        "Total size of rawkv ttl expire",
+    )
+    .unwrap();
+    pub static ref TTL_EXPIRE_KV_ENTRY_COUNTER: IntCounter = register_int_counter!(
+        "tikv_ttl_expire_kv_entry_total",
+        "Total number of rawkv ttl expire",
     )
     .unwrap();
     pub static ref RAFT_MESSAGE_RECV_COUNTER: IntCounter = register_int_counter!(

@@ -74,12 +74,12 @@ where
 impl<E: KvEngine, R: RegionInfoProvider> RunnableWithTimer for TtlChecker<E, R> {
     fn on_timeout(&mut self) {
         let mut key = vec![];
+        let mut scanned_regions = 0;
         loop {
             let (tx, rx) = mpsc::channel();
             if let Err(e) = self.region_info_provider.seek_region(
                 &key,
                 Box::new(move |iter| {
-                    let mut scanned_regions = 0;
                     let mut start_key = None;
                     let mut end_key = None;
                     for info in iter {
@@ -89,7 +89,7 @@ impl<E: KvEngine, R: RegionInfoProvider> RunnableWithTimer for TtlChecker<E, R> 
                         TTL_CHECKER_PROCESSED_REGIONS_GAUGE.inc();
                         scanned_regions += 1;
                         end_key = Some(info.region.get_end_key().to_vec());
-                        if scanned_regions == 10 {
+                        if scanned_regions % 10 == 0 {
                             break;
                         }
                     }

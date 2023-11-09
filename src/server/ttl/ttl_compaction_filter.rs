@@ -12,7 +12,9 @@ use engine_rocks::{
 };
 use engine_traits::raw_ttl::ttl_current_ts;
 
-use crate::server::metrics::{TTL_CHECKER_ACTIONS_COUNTER_VEC, TTL_EXPIRE_KV_SIZE_COUNTER_VEC};
+use crate::server::metrics::{
+    TTL_CHECKER_ACTIONS_COUNTER_VEC, TTL_EXPIRE_KV_ENTRY_COUNTER, TTL_EXPIRE_KV_SIZE_COUNTER,
+};
 
 #[derive(Default)]
 pub struct TtlCompactionFilterFactory<F: KvFormat> {
@@ -27,7 +29,6 @@ impl<F: KvFormat> CompactionFilterFactory for TtlCompactionFilterFactory<F> {
         context: &CompactionFilterContext,
     ) -> Option<(CString, Self::Filter)> {
         let current = ttl_current_ts();
-
         let mut min_expire_ts = u64::MAX;
         for i in 0..context.file_numbers().len() {
             let table_props = context.table_properties(i);
@@ -43,7 +44,6 @@ impl<F: KvFormat> CompactionFilterFactory for TtlCompactionFilterFactory<F> {
         let name = CString::new("ttl_compaction_filter").unwrap();
         let filter = TtlCompactionFilter::<F> {
             ts: current,
-            is_bottommost_level: context.is_bottommost_level(),
             _phantom: PhantomData,
         };
         Some((name, filter))
@@ -56,7 +56,6 @@ impl<F: KvFormat> CompactionFilterFactory for TtlCompactionFilterFactory<F> {
 
 pub struct TtlCompactionFilter<F: KvFormat> {
     ts: u64,
-    is_bottommost_level: bool,
     _phantom: PhantomData<F>,
 }
 
@@ -70,9 +69,6 @@ impl<F: KvFormat> CompactionFilter for TtlCompactionFilter<F> {
         value_type: CompactionFilterValueType,
     ) -> CompactionFilterDecision {
         if value_type != CompactionFilterValueType::Value {
-            TTL_EXPIRE_KV_SIZE_COUNTER_VEC
-                .with_label_values(&["expired"])
-                .inc_by(key.len() as u64 + value.len() as u64);
             return CompactionFilterDecision::Keep;
         }
         // Only consider data keys.
@@ -90,21 +86,28 @@ impl<F: KvFormat> CompactionFilter for TtlCompactionFilter<F> {
                 ..
             }) => match expire_ts <= self.ts {
                 true => {
-                    if self.is_bottommost_level {
-                        TTL_EXPIRE_KV_SIZE_COUNTER_VEC
-                            .with_label_values(&["expired_bottom"])
-                            .inc_by(key.len() as u64 + value.len() as u64);
-                    } else {
-                        TTL_EXPIRE_KV_SIZE_COUNTER_VEC
-                            .with_label_values(&["expired"])
-                            .inc_by(value.len() as u64);
-                    }
+                    info!(
+                        "ttl key expired";
+                        "key" => log_wrappers::Value::key(key),
+                        "value" => log_wrappers::Value::value(value),
+                        "expire_ts" => expire_ts,
+                        "current_ts" => self.ts,
+                    );
+                    TTL_EXPIRE_KV_SIZE_COUNTER.inc_by(key.len() as u64 + value.len() as u64);
+                    TTL_EXPIRE_KV_ENTRY_COUNTER.inc();
                     CompactionFilterDecision::Remove
                 }
                 false => {
-                    TTL_EXPIRE_KV_SIZE_COUNTER_VEC
-                        .with_label_values(&["expired"])
-                        .inc_by(key.len() as u64 + value.len() as u64);
+                    info!(
+                        "ttl key not expired";
+                        "key" => log_wrappers::Value::key(key),
+                        "value" => log_wrappers::Value::value(value),
+                        "expire_ts" => expire_ts,
+                        "current_ts" => self.ts,
+                    );
+                    TTL_CHECKER_ACTIONS_COUNTER_VEC
+                        .with_label_values(&["ttl_not_expired"])
+                        .inc();
                     CompactionFilterDecision::Keep
                 }
             },
